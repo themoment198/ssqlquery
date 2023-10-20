@@ -1,18 +1,23 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/themoment198/ssqlquery"
 	"log"
+	"time"
 )
 
 func init() {
 	log.SetFlags(log.Flags() | log.Lshortfile)
 }
 
+var sqlDriverName = "mysql"
+var sqlDataSourceName = "debian-sys-maint:vTYNrylHmACly2lq@tcp(localhost:3306)/d1?multiStatements=true&allowNativePasswords=true&clientFoundRows=true"
+
 func init() {
-	db, err := sql.Open("mysql", "debian-sys-maint:KwDeN6L0dKsxdXXR@tcp(localhost:3306)/test?multiStatements=true&allowNativePasswords=true&clientFoundRows=true")
+	db, err := sql.Open(sqlDriverName, sqlDataSourceName)
 	if err != nil {
 		panic(err)
 	}
@@ -42,7 +47,7 @@ insert into t1(c7) values('...');
 }
 
 func TestQuery() {
-	db, err := sql.Open("mysql", "debian-sys-maint:KwDeN6L0dKsxdXXR@tcp(localhost:3306)/d1?allowNativePasswords=true&clientFoundRows=true")
+	db, err := sql.Open(sqlDriverName, sqlDataSourceName)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,7 +62,9 @@ func TestQuery() {
 		C7 string `sql:"c7"`
 	}
 	result := new([]om)
-	err = ssqlquery.Query(db, result, "select * from t1 where c1 = 1")
+	t1 := time.Now()
+	err = ssqlquery.QueryContext(context.Background(), db, result, "select * from t1 where c1 = 1")
+	log.Println(time.Since(t1).String())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -65,7 +72,9 @@ func TestQuery() {
 	log.Print(*result)
 
 	result1 := new([]om)
-	err = ssqlquery.Query(db, result1, "select * from t1 where c1 = 2")
+	t1 = time.Now()
+	err = ssqlquery.QueryContext(context.Background(), db, result1, "select * from t1 where c1 = 2")
+	log.Println(time.Since(t1).String())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,7 +83,7 @@ func TestQuery() {
 }
 
 func TestQueryByTX() {
-	db, err := sql.Open("mysql", "debian-sys-maint:KwDeN6L0dKsxdXXR@tcp(localhost:3306)/d1?allowNativePasswords=true&clientFoundRows=true")
+	db, err := sql.Open(sqlDriverName, sqlDataSourceName)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -94,7 +103,9 @@ func TestQueryByTX() {
 		C1 int `sql:"c1"`
 	}
 	result := new([]om1)
-	err = ssqlquery.Query(tx, result, "select * from t1")
+	t1 := time.Now()
+	err = ssqlquery.QueryContext(context.Background(), tx, result, "select * from t1")
+	log.Println(time.Since(t1).String())
 	if err != nil {
 		{
 			err := tx.Rollback()
@@ -115,5 +126,13 @@ func TestQueryByTX() {
 
 func main() {
 	TestQuery()
+	TestQuery()
+	TestQuery()
+	println()
+	TestQueryByTX()
+	TestQueryByTX()
+	TestQueryByTX()
+	TestQueryByTX()
+	TestQueryByTX()
 	TestQueryByTX()
 }

@@ -1,53 +1,43 @@
 package ssqlquery
 
 import (
+	"context"
 	"database/sql"
 	"errors"
-	"fmt"
+	"golang.org/x/sync/singleflight"
 	"reflect"
-	"strconv"
-	"strings"
 	"sync"
 )
 
-var chanByEmptyStructPool = sync.Pool{
-	New: func() interface{} {
-		return make(chan struct{})
-	},
-}
-
-var rawBytesPool = sync.Pool{
-	New: func() interface{} {
-		return new(sql.RawBytes)
-	},
-}
+var sfInst singleflight.Group
 
 type cacheTypeInfo struct {
 	elemByType reflect.Type
-	fieldNames map[string]interface{}
-	ch         chan struct{}
+	fieldNames []string
+	err        error
 }
 
 var (
-	split                   = `\/`
-	cacheMap                = &sync.Map{}
-	IsNotPtrOfStructTypeErr = errors.New(`is not '*[]struct' type`)
-	NoFeildStructErr        = errors.New("must be one feild at least")
-	FieldNotBeStructErr     = errors.New("field can not be struct")
-	FieldNotBeAnonymous     = errors.New("field can not be anonymous")
-	NoSQLTagErr             = errors.New("tag 'sql' is empty")
-	ColDupErr               = errors.New("not allow dup col")
-	DbHandleErr             = errors.New("dbHandle must be *sql.DB or *sql.Tx")
-	StructErr               = errors.New("struct not right")
+	cacheMap = &sync.Map{} // typeStr -> cacheTypeInfo
+)
+
+var (
+	IsNotPtrOfSliceStructTypeErr = errors.New(`is not '*[]struct' type`)
+	NoFeildStructErr             = errors.New("must be one feild at least")
+	FieldIsNotBaseTypeErr        = errors.New("field must be base type")
+	FieldIsAnonymousErr          = errors.New("field can not be anonymous")
+	FieldIsNotExportErr          = errors.New("field must be export")
+	NoSQLTagErr                  = errors.New("tag 'sql' is empty")
+	DbHandleErr                  = errors.New("dbHandle must be *sql.DB or *sql.Tx")
 )
 
 type query interface {
-	Query(query string, args ...interface{}) (*sql.Rows, error)
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 }
 
-func Query(dbHandle interface{}, objectModel interface{}, q string, args ...interface{}) error {
+func QueryContext(ctx context.Context, dbHandle interface{}, objectModel interface{}, q string, args ...interface{}) error {
+	// check dbHandle
 	var db query
-
 	switch obj := dbHandle.(type) {
 	case *sql.DB:
 		db = obj
@@ -59,83 +49,95 @@ func Query(dbHandle interface{}, objectModel interface{}, q string, args ...inte
 
 	// assume objectModel type is *[]struct
 	tp := reflect.TypeOf(objectModel)
-	kd := tp.Kind()
-	switch kd {
+	switch tp.Kind() {
 	case reflect.Ptr:
 		if tp.Elem().Kind() != reflect.Slice {
-			return IsNotPtrOfStructTypeErr
+			return IsNotPtrOfSliceStructTypeErr
 		}
 		if tp.Elem().Elem().Kind() != reflect.Struct {
-			return IsNotPtrOfStructTypeErr
+			return IsNotPtrOfSliceStructTypeErr
 		}
 	default:
-		return IsNotPtrOfStructTypeErr
+		return IsNotPtrOfSliceStructTypeErr
 	}
 
 	// get value of slice
 	result := reflect.ValueOf(objectModel).Elem()
 
 	// get type of struct
-	elemByType := reflect.TypeOf(objectModel).Elem().Elem()
+	elemByType := tp.Elem().Elem()
 
 	// check field count
 	if elemByType.NumField() == 0 {
 		return NoFeildStructErr
 	}
 
-	ch := chanByEmptyStructPool.Get().(chan struct{})
-
 	// cache type info
-	typeMark := elemByType.PkgPath() + "." + elemByType.Name()
-	cacheTypeInfoInst, has := cacheMap.LoadOrStore(typeMark, &cacheTypeInfo{elemByType: elemByType, ch: ch})
-	real := cacheTypeInfoInst.(*cacheTypeInfo)
-	if !has {
-		fieldNames := make(map[string]interface{})
+	typeName := elemByType.String()
+
+	cti, err, _ := sfInst.Do(typeName, func() (interface{}, error) {
+		cti, ok := cacheMap.Load(typeName)
+		if ok {
+			realCti := cti.(*cacheTypeInfo)
+			if realCti.err != nil {
+				return nil, realCti.err
+			}
+
+			return cti, nil
+		}
+
+		realCti := &cacheTypeInfo{
+			elemByType: elemByType,
+			fieldNames: nil,
+			err:        nil,
+		}
+
 		for i := 0; i < elemByType.NumField(); i++ {
-			if elemByType.Field(i).Type.Kind() == reflect.Struct {
-				cacheMap.Delete(typeMark)
-				close(real.ch)
-				return FieldNotBeStructErr
-			}
+			sf := elemByType.Field(i)
 
-			if elemByType.Field(i).Anonymous {
-				cacheMap.Delete(typeMark)
-				close(real.ch)
-				return FieldNotBeAnonymous
+			// check field
+			switch sf.Type.Kind() {
+			case reflect.Uintptr, reflect.Complex64, reflect.Complex128, reflect.Array, reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Struct, reflect.UnsafePointer:
+				realCti.err = FieldIsNotBaseTypeErr
+				return nil, FieldIsNotBaseTypeErr
+			case reflect.Slice:
+				if sf.Type.Elem().Kind() != reflect.Uint8 {
+					realCti.err = FieldIsNotBaseTypeErr
+					return nil, FieldIsNotBaseTypeErr
+				}
 			}
-
-			tag := elemByType.Field(i).Tag.Get("sql")
+			if sf.Anonymous {
+				realCti.err = FieldIsAnonymousErr
+				return nil, FieldIsAnonymousErr
+			}
+			if sf.IsExported() == false {
+				realCti.err = FieldIsNotExportErr
+				return nil, FieldIsNotExportErr
+			}
+			tag := sf.Tag.Get("sql")
 			if tag == "" {
-				cacheMap.Delete(typeMark)
-				close(real.ch)
-				return NoSQLTagErr
+				realCti.err = NoSQLTagErr
+				return nil, NoSQLTagErr
 			}
-
-			fieldNames[tag+split+fmt.Sprintf("%d", i)] = nil
+			realCti.fieldNames = append(realCti.fieldNames, tag)
 		}
-		real.fieldNames = fieldNames
-		close(real.ch)
-	} else {
-		chanByEmptyStructPool.Put(ch)
-		<-real.ch
 
-		// check 'cacheMap' again
-		_, ok := cacheMap.Load(typeMark)
-		if !ok {
-			return StructErr
-		}
+		cacheMap.Store(typeName, realCti)
+		return realCti, nil
+	})
+	if err != nil {
+		return err
 	}
+	realCti := cti.(*cacheTypeInfo)
 
-	// alloc type with cache type info
+	// alloc struct
 	elemByValue := reflect.New(elemByType)
 	fieldNames := make(map[string]interface{})
-	for k, _ := range real.fieldNames {
-		fieldKey := strings.Split(k, split)
-		index, _ := strconv.Atoi(fieldKey[1])
-		fieldNames[fieldKey[0]] = elemByValue.Elem().Field(index).Addr().Interface()
+	for k, v := range realCti.fieldNames {
+		fieldNames[v] = elemByValue.Elem().Field(k).Addr().Interface()
 	}
 
-	rows, err := db.Query(q, args...)
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return err
 	}
@@ -151,9 +153,7 @@ func Query(dbHandle interface{}, objectModel interface{}, q string, args ...inte
 		if _, ok := fieldNames[v.Name()]; ok {
 			rowTypes = append(rowTypes, fieldNames[v.Name()])
 		} else {
-			rawBytes := rawBytesPool.Get().(*sql.RawBytes)
-			defer rawBytesPool.Put(rawBytes)
-			rowTypes = append(rowTypes, rawBytes)
+			rowTypes = append(rowTypes, &sqlRawBytesInst)
 		}
 	}
 
@@ -167,3 +167,5 @@ func Query(dbHandle interface{}, objectModel interface{}, q string, args ...inte
 	}
 	return nil
 }
+
+var sqlRawBytesInst = make(sql.RawBytes, 0)
