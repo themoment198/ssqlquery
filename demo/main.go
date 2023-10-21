@@ -34,11 +34,11 @@ create database d1;
 use d1;
 
 drop table if exists t1;
-create table t1(c1 int not null AUTO_INCREMENT PRIMARY KEY, c2 float not null default 0, c3 double not null default 0, c4 varchar(16) not null default '', c5 dec(10,2) not null default 0.0, c6 datetime not null default '1990-01-01', c7 blob not null);
+create table t1(c1 int not null AUTO_INCREMENT PRIMARY KEY, c2 float not null default 0, c3 double not null default 0, c4 varchar(16) not null default '', c5 dec(10,2) not null default 0.0, c6 datetime not null default '1990-01-01', c7 blob not null, c8 tinyint not null);
 
-insert into t1 values(1, 2.2, 3.3, 'hello world', 23.43, '1988-09-09', 'hello world');
-insert into t1 values(2, 4.4, 5.5, 'foo bar', 45.65, '1988-10-09', 'foo bar');
-insert into t1(c7) values('...');
+insert into t1 values(1, 2.2, 3.3, 'hello world', 23.43, '1988-09-09', 'hello world', true);
+insert into t1 values(2, 4.4, 5.5, 'foo bar', 45.65, '1988-10-09', 'foo bar', false);
+insert into t1(c7, c8) values('...', true);
 `
 	_, err = db.Exec(initSql)
 	if err != nil {
@@ -59,7 +59,14 @@ func TestQuery() {
 	}
 
 	type om struct {
-		C7 string `sql:"c7"`
+		C1 int     `sql:"c1"`
+		C2 float32 `sql:"c2"`
+		C3 float64 `sql:"c3"`
+		C4 string  `sql:"c4"`
+		C5 string  `sql:"c5"`
+		C6 string  `sql:"c6"`
+		C7 string  `sql:"c7"`
+		C8 bool    `sql:"c8"`
 	}
 	result := new([]om)
 	t1 := time.Now()
@@ -80,6 +87,8 @@ func TestQuery() {
 	}
 
 	log.Print(*result1)
+	log.Print(len(*result), cap(*result))
+	println()
 }
 
 func TestQueryByTX() {
@@ -100,7 +109,14 @@ func TestQueryByTX() {
 	}
 
 	type om1 struct {
-		C1 int `sql:"c1"`
+		C1 int     `sql:"c1"`
+		C2 float32 `sql:"c2"`
+		C3 float64 `sql:"c3"`
+		C4 string  `sql:"c4"`
+		C5 string  `sql:"c5"`
+		C6 string  `sql:"c6"`
+		C7 string  `sql:"c7"`
+		C8 bool    `sql:"c8"`
 	}
 	result := new([]om1)
 	t1 := time.Now()
@@ -122,12 +138,15 @@ func TestQueryByTX() {
 	}
 
 	log.Print(*result)
+	log.Print(len(*result), cap(*result))
+	println()
 }
 
 func main() {
 	TestQuery()
 	TestQuery()
 	TestQuery()
+	println()
 	println()
 	TestQueryByTX()
 	TestQueryByTX()

@@ -12,7 +12,6 @@ import (
 var sfInst singleflight.Group
 
 type cacheTypeInfo struct {
-	elemByType reflect.Type
 	fieldNames []string
 	err        error
 }
@@ -87,7 +86,6 @@ func QueryContext(ctx context.Context, dbHandle interface{}, objectModel interfa
 		}
 
 		realCti := &cacheTypeInfo{
-			elemByType: elemByType,
 			fieldNames: nil,
 			err:        nil,
 		}
